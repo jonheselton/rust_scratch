@@ -1,37 +1,61 @@
-use input::{Libinput, LibinputInterface};
-use std::fs::{File, OpenOptions};
-use std::os::unix::{fs::OpenOptionsExt, io::OwnedFd};
-use std::path::Path;
-
-extern crate libc;
-use libc::{O_RDONLY, O_RDWR, O_WRONLY};
+use input::{Libinput, LibinputInterface, Device, Event};
+use input::event::{EventTrait, PointerEvent};
+use input::event::pointer::{PointerButtonEvent, PointerScrollWheelEvent};
 
 struct Interface;
 
 impl LibinputInterface for Interface {
-    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
-        OpenOptions::new()
-            .custom_flags(flags)
-            .read((flags & O_RDONLY != 0) | (flags & O_RDWR != 0))
-            .write((flags & O_WRONLY != 0) | (flags & O_RDWR != 0))
-            .open(path)
-            .map(|file| file.into())
-            .map_err(|err| err.raw_os_error().unwrap())
-    }
-    fn close_restricted(&mut self, fd: OwnedFd) {
+    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<i32, i32> {
         unsafe {
-            File::from(fd);
+            let fd = libc::open(path.as_ptr() as *const libc::c_char, flags);
+            if fd < 0 {
+                Err(*libc::__errno_location())
+            } else {
+                Ok(fd)
+            }
+        }
+    }
+
+    fn close_restricted(&mut self, fd: i32) {
+        unsafe {
+            libc::close(fd);
         }
     }
 }
 
 fn main() {
-    let mut input = Libinput::new_with_udev(Interface);
-    input.udev_assign_seat("seat0").unwrap();
+    let mut interface = Interface;
+    let context = Libinput::new_with_udev(&mut interface);
+    context.udev_assign_seat("seat0").unwrap();
+
     loop {
-        input.dispatch().unwrap();
-        for event in &mut input {
-            println!("Got event: {:?}", event);
+        context.dispatch().unwrap();
+        for event in context.by_ref() {
+            if let Event::Device(device_event) = event {
+                let device = device_event.device();
+                if device.has_capability(input::DeviceCapability::Pointer) {
+                    handle_pointer_event(event)
+                }
+            }
         }
+    }
+}
+
+fn handle_pointer_event(event: Event) {
+    match event {
+        Event::Pointer(pointer_event) => {
+            match pointer_event {
+                PointerEvent::Button(button_event) => {
+                    let time = button_event.time_usec();
+                    println!("Button event: {:?} at {}", button_event, time);
+                }
+                PointerEvent::ScrollWheel(scroll_wheel_event) => {
+                    let time = scroll_wheel_event.time_usec();
+                    println!("Scroll wheel event: {:?} at {}", scroll_wheel_event, time);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
 }
